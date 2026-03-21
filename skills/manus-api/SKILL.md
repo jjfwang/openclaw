@@ -27,10 +27,9 @@ Prefer this over ad-hoc curl because the helper script already handles:
 - Preferred env vars: `MANUS_API_KEY` / `MANUS_API_BASE`
 - Backward-compatible env vars: `ORCH_MANUS_API_KEY` / `ORCH_MANUS_API_BASE`
 - Preferred global env file on this machine: `~/.openclaw/.env`
-- Legacy fallback env file: `/home/pi/Repos/ideation/manus-orchestrator/.env`
 - Default API base URL: `https://api.manus.ai/v1`
 
-This skill now prefers OpenClaw's own global env file so it can outlive ideation cleanly.
+This skill is documented to use OpenClaw's own global env file so it can stay independent of ideation.
 
 ## Commands
 
