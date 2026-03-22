@@ -118,7 +118,7 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create, inspect, and wait on Manus tasks.")
-    parser.add_argument("--env-file", default=DEFAULT_ENV_FILE, help="Optional .env file to source for ORCH_MANUS_API_KEY / ORCH_MANUS_API_BASE")
+    parser.add_argument("--env-file", default=DEFAULT_ENV_FILE, help="Optional .env file to source for MANUS_API_KEY / MANUS_API_BASE (falls back to legacy ideation env if omitted and needed)")
     parser.add_argument("--base-url", help="Override Manus API base URL")
 
     sub = parser.add_subparsers(dest="command", required=True)
