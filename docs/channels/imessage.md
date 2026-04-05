@@ -28,7 +28,7 @@ Status: legacy external CLI integration. Gateway spawns `imsg rpc` and communica
   </Card>
 </CardGroup>
 
-## Onboarding
+## Quick setup
 
 <Tabs>
   <Tab title="Local Mac (fast path)">
@@ -158,6 +158,7 @@ imsg send <handle> "test"
     Group sender allowlist: `channels.imessage.groupAllowFrom`.
 
     Runtime fallback: if `groupAllowFrom` is unset, iMessage group sender checks fall back to `allowFrom` when available.
+    Runtime note: if `channels.imessage` is completely missing, runtime falls back to `groupPolicy="allowlist"` and logs a warning (even if `channels.defaults.groupPolicy` is set).
 
     Mention gating for groups:
 
@@ -182,6 +183,58 @@ imsg send <handle> "test"
 
   </Tab>
 </Tabs>
+
+## ACP conversation bindings
+
+Legacy iMessage chats can also be bound to ACP sessions.
+
+Fast operator flow:
+
+- Run `/acp spawn codex --bind here` inside the DM or allowed group chat.
+- Future messages in that same iMessage conversation route to the spawned ACP session.
+- `/new` and `/reset` reset the same bound ACP session in place.
+- `/acp close` closes the ACP session and removes the binding.
+
+Configured persistent bindings are supported through top-level `bindings[]` entries with `type: "acp"` and `match.channel: "imessage"`.
+
+`match.peer.id` can use:
+
+- normalized DM handle such as `+15555550123` or `user@example.com`
+- `chat_id:<id>` (recommended for stable group bindings)
+- `chat_guid:<guid>`
+- `chat_identifier:<identifier>`
+
+Example:
+
+```json5
+{
+  agents: {
+    list: [
+      {
+        id: "codex",
+        runtime: {
+          type: "acp",
+          acp: { agent: "codex", backend: "acpx", mode: "persistent" },
+        },
+      },
+    ],
+  },
+  bindings: [
+    {
+      type: "acp",
+      agentId: "codex",
+      match: {
+        channel: "imessage",
+        accountId: "default",
+        peer: { kind: "group", id: "chat_id:123" },
+      },
+      acp: { label: "codex-group" },
+    },
+  ],
+}
+```
+
+See [ACP Agents](/tools/acp-agents) for shared ACP binding behavior.
 
 ## Deployment patterns
 
@@ -358,9 +411,17 @@ imsg send <handle> "test"
   </Accordion>
 </AccordionGroup>
 
-## Configuration
+## Configuration reference pointers
 
 - [Configuration reference - iMessage](/gateway/configuration-reference#imessage)
 - [Gateway configuration](/gateway/configuration)
 - [Pairing](/channels/pairing)
 - [BlueBubbles](/channels/bluebubbles)
+
+## Related
+
+- [Channels Overview](/channels) — all supported channels
+- [Pairing](/channels/pairing) — DM authentication and pairing flow
+- [Groups](/channels/groups) — group chat behavior and mention gating
+- [Channel Routing](/channels/channel-routing) — session routing for messages
+- [Security](/gateway/security) — access model and hardening

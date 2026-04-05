@@ -2,9 +2,8 @@ import * as fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it, test, vi } from "vitest";
+import { beforeEach, describe, expect, it, test, vi } from "vitest";
 import { defaultVoiceWakeTriggers } from "../infra/voicewake.js";
-import { GatewayClient } from "./client.js";
 import { handleControlUiHttpRequest } from "./control-ui.js";
 import {
   DEFAULT_DANGEROUS_NODE_COMMANDS,
@@ -45,9 +44,47 @@ vi.mock("ws", () => ({
   },
 }));
 
+let GatewayClient: typeof import("./client.js").GatewayClient;
+
+async function loadFreshGatewayClientModuleForTest() {
+  vi.resetModules();
+  vi.doMock("ws", () => ({
+    WebSocket: class MockWebSocket {
+      on = vi.fn();
+      close = vi.fn();
+      send = vi.fn();
+
+      constructor(url: unknown, opts: unknown) {
+        wsMockState.last = { url, opts };
+      }
+    },
+  }));
+  ({ GatewayClient } = await import("./client.js"));
+}
+
+beforeEach(async () => {
+  wsMockState.last = null;
+  await loadFreshGatewayClientModuleForTest();
+});
+
 describe("GatewayClient", () => {
+  async function withControlUiRoot(
+    params: { faviconSvg?: string; indexHtml?: string },
+    run: (tmp: string) => Promise<void>,
+  ) {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
+    try {
+      await fs.writeFile(path.join(tmp, "index.html"), params.indexHtml ?? "<html></html>\n");
+      if (typeof params.faviconSvg === "string") {
+        await fs.writeFile(path.join(tmp, "favicon.svg"), params.faviconSvg);
+      }
+      await run(tmp);
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
+
   test("uses a large maxPayload for node snapshots", () => {
-    wsMockState.last = null;
     const client = new GatewayClient({ url: "ws://127.0.0.1:1" });
     client.start();
     const last = wsMockState.last as { url: unknown; opts: unknown } | null;
@@ -57,10 +94,7 @@ describe("GatewayClient", () => {
   });
 
   it("returns 404 for missing static asset paths instead of SPA fallback", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
-    try {
-      await fs.writeFile(path.join(tmp, "index.html"), "<html></html>\n");
-      await fs.writeFile(path.join(tmp, "favicon.svg"), "<svg/>");
+    await withControlUiRoot({ faviconSvg: "<svg/>" }, async (tmp) => {
       const { res } = makeControlUiResponse();
       const handled = handleControlUiHttpRequest(
         { url: "/webchat/favicon.svg", method: "GET" } as IncomingMessage,
@@ -69,15 +103,24 @@ describe("GatewayClient", () => {
       );
       expect(handled).toBe(true);
       expect(res.statusCode).toBe(404);
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
+    });
+  });
+
+  it("returns 404 for missing static assets with query strings", async () => {
+    await withControlUiRoot({}, async (tmp) => {
+      const { res } = makeControlUiResponse();
+      const handled = handleControlUiHttpRequest(
+        { url: "/webchat/favicon.svg?v=1", method: "GET" } as IncomingMessage,
+        res,
+        { root: { kind: "resolved", path: tmp } },
+      );
+      expect(handled).toBe(true);
+      expect(res.statusCode).toBe(404);
+    });
   });
 
   it("still serves SPA fallback for extensionless paths", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
-    try {
-      await fs.writeFile(path.join(tmp, "index.html"), "<html></html>\n");
+    await withControlUiRoot({}, async (tmp) => {
       const { res } = makeControlUiResponse();
       const handled = handleControlUiHttpRequest(
         { url: "/webchat/chat", method: "GET" } as IncomingMessage,
@@ -86,15 +129,11 @@ describe("GatewayClient", () => {
       );
       expect(handled).toBe(true);
       expect(res.statusCode).toBe(200);
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
+    });
   });
 
   it("HEAD returns 404 for missing static assets consistent with GET", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
-    try {
-      await fs.writeFile(path.join(tmp, "index.html"), "<html></html>\n");
+    await withControlUiRoot({}, async (tmp) => {
       const { res } = makeControlUiResponse();
       const handled = handleControlUiHttpRequest(
         { url: "/webchat/favicon.svg", method: "HEAD" } as IncomingMessage,
@@ -103,15 +142,11 @@ describe("GatewayClient", () => {
       );
       expect(handled).toBe(true);
       expect(res.statusCode).toBe(404);
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
+    });
   });
 
   it("serves SPA fallback for dotted path segments that are not static assets", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
-    try {
-      await fs.writeFile(path.join(tmp, "index.html"), "<html></html>\n");
+    await withControlUiRoot({}, async (tmp) => {
       for (const route of ["/webchat/user/jane.doe", "/webchat/v2.0", "/settings/v1.2"]) {
         const { res } = makeControlUiResponse();
         const handled = handleControlUiHttpRequest(
@@ -122,15 +157,11 @@ describe("GatewayClient", () => {
         expect(handled).toBe(true);
         expect(res.statusCode, `expected 200 for ${route}`).toBe(200);
       }
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
+    });
   });
 
   it("serves SPA fallback for .html paths that do not exist on disk", async () => {
-    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-ui-"));
-    try {
-      await fs.writeFile(path.join(tmp, "index.html"), "<html></html>\n");
+    await withControlUiRoot({}, async (tmp) => {
       const { res } = makeControlUiResponse();
       const handled = handleControlUiHttpRequest(
         { url: "/webchat/foo.html", method: "GET" } as IncomingMessage,
@@ -139,9 +170,7 @@ describe("GatewayClient", () => {
       );
       expect(handled).toBe(true);
       expect(res.statusCode).toBe(200);
-    } finally {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
+    });
   });
 });
 
@@ -174,16 +203,19 @@ describe("gateway broadcaster", () => {
         socket: approvalsSocket as unknown as GatewayWsClient["socket"],
         connect: { role: "operator", scopes: ["operator.approvals"] } as GatewayWsClient["connect"],
         connId: "c-approvals",
+        usesSharedGatewayAuth: false,
       },
       {
         socket: pairingSocket as unknown as GatewayWsClient["socket"],
         connect: { role: "operator", scopes: ["operator.pairing"] } as GatewayWsClient["connect"],
         connId: "c-pairing",
+        usesSharedGatewayAuth: false,
       },
       {
         socket: readSocket as unknown as GatewayWsClient["socket"],
         connect: { role: "operator", scopes: ["operator.read"] } as GatewayWsClient["connect"],
         connId: "c-read",
+        usesSharedGatewayAuth: false,
       },
     ]);
 
@@ -326,6 +358,28 @@ describe("resolveNodeCommandAllowlist", () => {
     }
   });
 
+  it("includes Android notifications and device diagnostics commands by default", () => {
+    const allow = resolveNodeCommandAllowlist(
+      {},
+      {
+        platform: "android 16",
+        deviceFamily: "Android",
+      },
+    );
+
+    expect(allow.has("notifications.list")).toBe(true);
+    expect(allow.has("notifications.actions")).toBe(true);
+    expect(allow.has("device.permissions")).toBe(true);
+    expect(allow.has("device.health")).toBe(true);
+    expect(allow.has("callLog.search")).toBe(true);
+    expect(allow.has("system.notify")).toBe(true);
+    expect(allow.has("sms.search")).toBe(false);
+  });
+
+  it("treats sms.search as dangerous by default", () => {
+    expect(DEFAULT_DANGEROUS_NODE_COMMANDS).toContain("sms.search");
+  });
+
   it("can explicitly allow dangerous commands via allowCommands", () => {
     const allow = resolveNodeCommandAllowlist(
       {
@@ -340,6 +394,34 @@ describe("resolveNodeCommandAllowlist", () => {
     expect(allow.has("camera.snap")).toBe(true);
     expect(allow.has("screen.record")).toBe(true);
     expect(allow.has("camera.clip")).toBe(false);
+  });
+
+  it("treats unknown/confusable metadata as fail-safe for system.run defaults", () => {
+    const allow = resolveNodeCommandAllowlist(
+      {},
+      {
+        platform: "iPhοne",
+        deviceFamily: "iPhοne",
+      },
+    );
+
+    expect(allow.has("system.run")).toBe(false);
+    expect(allow.has("system.which")).toBe(false);
+    expect(allow.has("system.notify")).toBe(true);
+  });
+
+  it("normalizes dotted-I platform values to iOS classification", () => {
+    const allow = resolveNodeCommandAllowlist(
+      {},
+      {
+        platform: "İOS",
+        deviceFamily: "iPhone",
+      },
+    );
+
+    expect(allow.has("system.run")).toBe(false);
+    expect(allow.has("system.which")).toBe(false);
+    expect(allow.has("device.info")).toBe(true);
   });
 });
 

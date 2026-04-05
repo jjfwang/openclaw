@@ -9,7 +9,6 @@ import { buildWorkspaceSkillSnapshot } from "../../agents/skills.js";
 import { getSkillsSnapshotVersion } from "../../agents/skills/refresh.js";
 import { buildSystemPromptParams } from "../../agents/system-prompt-params.js";
 import { buildAgentSystemPrompt } from "../../agents/system-prompt.js";
-import { buildToolSummaryMap } from "../../agents/tool-summaries.js";
 import type { WorkspaceBootstrapFile } from "../../agents/workspace.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import { buildTtsSystemPromptHint } from "../../tts/tts.js";
@@ -28,6 +27,11 @@ export async function resolveCommandsSystemPromptBundle(
   params: HandleCommandsParams,
 ): Promise<CommandsSystemPromptBundle> {
   const workspaceDir = params.workspaceDir;
+  const { sessionAgentId } = resolveSessionAgentIds({
+    sessionKey: params.sessionKey,
+    config: params.cfg,
+    agentId: params.agentId,
+  });
   const { bootstrapFiles, contextFiles: injectedFiles } = await resolveBootstrapContextForRun({
     workspaceDir,
     config: params.cfg,
@@ -38,6 +42,7 @@ export async function resolveCommandsSystemPromptBundle(
     try {
       return buildWorkspaceSkillSnapshot(workspaceDir, {
         config: params.cfg,
+        agentId: sessionAgentId,
         eligibility: { remote: getRemoteSkillEligibility() },
         snapshotVersion: getSkillsSnapshotVersion(workspaceDir),
       });
@@ -54,8 +59,10 @@ export async function resolveCommandsSystemPromptBundle(
     try {
       return createOpenClawCodingTools({
         config: params.cfg,
+        agentId: params.agentId,
         workspaceDir,
         sessionKey: params.sessionKey,
+        allowGatewaySubagentBinding: true,
         messageProvider: params.command.channel,
         groupId: params.sessionEntry?.groupId ?? undefined,
         groupChannel: params.sessionEntry?.groupChannel ?? undefined,
@@ -69,12 +76,7 @@ export async function resolveCommandsSystemPromptBundle(
       return [];
     }
   })();
-  const toolSummaries = buildToolSummaryMap(tools);
   const toolNames = tools.map((t) => t.name);
-  const { sessionAgentId } = resolveSessionAgentIds({
-    sessionKey: params.sessionKey,
-    config: params.cfg,
-  });
   const defaultModelRef = resolveDefaultModelForAgent({
     cfg: params.cfg,
     agentId: sessionAgentId,
@@ -115,7 +117,6 @@ export async function resolveCommandsSystemPromptBundle(
     ownerNumbers: undefined,
     reasoningTagHint: false,
     toolNames,
-    toolSummaries,
     modelAliasLines: [],
     userTimezone,
     userTime,
@@ -124,6 +125,7 @@ export async function resolveCommandsSystemPromptBundle(
     skillsPrompt,
     heartbeatPrompt: undefined,
     ttsHint,
+    acpEnabled: params.cfg?.acp?.enabled !== false,
     runtimeInfo,
     sandboxInfo,
     memoryCitationsMode: params.cfg?.memory?.citations,
