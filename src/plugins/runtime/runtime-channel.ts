@@ -33,8 +33,17 @@ import {
 } from "../../auto-reply/reply/mentions.js";
 import { dispatchReplyWithBufferedBlockDispatcher } from "../../auto-reply/reply/provider-dispatcher.js";
 import { createReplyDispatcherWithTyping } from "../../auto-reply/reply/reply-dispatcher.js";
-import { removeAckReactionAfterReply, shouldAckReaction } from "../../channels/ack-reactions.js";
+import {
+  createAckReactionHandle,
+  removeAckReactionAfterReply,
+  removeAckReactionHandleAfterReply,
+  shouldAckReaction,
+} from "../../channels/ack-reactions.js";
 import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-gating.js";
+import {
+  implicitMentionKindWhen,
+  resolveInboundMentionDecision,
+} from "../../channels/mention-gating.js";
 import {
   setChannelConversationBindingIdleTimeoutBySessionKey,
   setChannelConversationBindingMaxAgeBySessionKey,
@@ -62,6 +71,7 @@ import {
   upsertChannelPairingRequest,
 } from "../../pairing/pairing-store.js";
 import { buildAgentSessionKey, resolveAgentRoute } from "../../routing/resolve-route.js";
+import { createChannelRuntimeContextRegistry } from "./channel-runtime-contexts.js";
 import type { PluginRuntime } from "./types.js";
 
 export function createRuntimeChannel(): PluginRuntime["channel"] {
@@ -128,10 +138,14 @@ export function createRuntimeChannel(): PluginRuntime["channel"] {
       buildMentionRegexes,
       matchesMentionPatterns,
       matchesMentionWithExplicit,
+      implicitMentionKindWhen,
+      resolveInboundMentionDecision,
     },
     reactions: {
+      createAckReactionHandle,
       shouldAckReaction,
       removeAckReactionAfterReply,
+      removeAckReactionHandleAfterReply,
     },
     groups: {
       resolveGroupPolicy: resolveChannelGroupPolicy,
@@ -166,6 +180,7 @@ export function createRuntimeChannel(): PluginRuntime["channel"] {
           maxAgeMs,
         }),
     },
+    runtimeContexts: createChannelRuntimeContextRegistry(),
   } satisfies PluginRuntime["channel"];
 
   return channelRuntime as PluginRuntime["channel"];

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { WebSocket } from "ws";
+import "./test-helpers.mocks.js";
 import { parseConfigJson5, resetConfigRuntimeState } from "../config/config.js";
 import {
   clearSessionStoreCacheForTest,
@@ -19,26 +20,28 @@ import {
 import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
 import { rawDataToString } from "../infra/ws.js";
 import { resetLogger, setLoggerOverride } from "../logging.js";
-import { clearGatewaySubagentRuntime } from "../plugins/runtime/index.js";
+import { clearGatewaySubagentRuntime } from "../plugins/runtime/gateway-bindings.js";
 import {
   DEFAULT_AGENT_ID,
   normalizeMainKey,
   parseAgentSessionKey,
   toAgentStoreSessionKey,
 } from "../routing/session-key.js";
+import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
+import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { captureEnv } from "../test-utils/env.js";
 import { getDeterministicFreePortBlock } from "../test-utils/ports.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
 import type { GatewayServerOptions } from "./server.js";
+import { resetTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 import {
   agentCommand,
   cronIsolatedRun,
   embeddedRunMock,
   getReplyFromConfig,
   piSdkMock,
-  resetTestPluginRegistry,
   sendWhatsAppMock,
   sessionStoreSaveDelayMs,
   setTestConfigRoot,
@@ -46,7 +49,7 @@ import {
   testTailscaleWhois,
   testState,
   testTailnetIPv4,
-} from "./test-helpers.mocks.js";
+} from "./test-helpers.runtime-state.js";
 
 // Import lazily after test env/home setup so config/session paths resolve to test dirs.
 // Keep one cached module per worker for speed.
@@ -67,6 +70,7 @@ const GATEWAY_TEST_ENV_KEYS = [
   "OPENCLAW_SKIP_GMAIL_WATCHER",
   "OPENCLAW_SKIP_CANVAS_HOST",
   "OPENCLAW_BUNDLED_PLUGINS_DIR",
+  "OPENCLAW_DISABLE_BUNDLED_PLUGINS",
   "OPENCLAW_SKIP_CHANNELS",
   "OPENCLAW_SKIP_PROVIDERS",
   "OPENCLAW_SKIP_CRON",
@@ -232,6 +236,7 @@ function applyGatewaySkipEnv() {
   process.env.OPENCLAW_SKIP_PROVIDERS = "1";
   process.env.OPENCLAW_SKIP_CRON = "1";
   process.env.OPENCLAW_TEST_MINIMAL_GATEWAY = "1";
+  process.env.OPENCLAW_DISABLE_BUNDLED_PLUGINS = "1";
   process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = tempHome
     ? path.join(tempHome, "openclaw-test-no-bundled-extensions")
     : "openclaw-test-no-bundled-extensions";
@@ -331,12 +336,23 @@ async function resetGatewayTestState(options: { uniqueConfigRoot: boolean }) {
   embeddedRunMock.abortCalls = [];
   embeddedRunMock.waitCalls = [];
   embeddedRunMock.waitResults.clear();
+  embeddedRunMock.compactEmbeddedPiSession.mockReset();
+  embeddedRunMock.compactEmbeddedPiSession.mockResolvedValue({
+    ok: true,
+    compacted: true,
+    result: {
+      summary: "summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 120,
+      tokensAfter: 80,
+    },
+  });
   for (const sessionKey of resolveGatewayTestMainSessionKeys()) {
     drainSystemEvents(sessionKey);
   }
   resetAgentRunContextForTest();
   const mod = await getServerModule();
-  mod.__resetModelCatalogCacheForTest();
+  await mod.__resetModelCatalogCacheForTest();
   piSdkMock.enabled = false;
   piSdkMock.discoverCalls = 0;
   piSdkMock.models = [];
@@ -410,6 +426,17 @@ async function resetGatewayTestRuntimeOnly() {
   embeddedRunMock.abortCalls = [];
   embeddedRunMock.waitCalls = [];
   embeddedRunMock.waitResults.clear();
+  embeddedRunMock.compactEmbeddedPiSession.mockReset();
+  embeddedRunMock.compactEmbeddedPiSession.mockResolvedValue({
+    ok: true,
+    compacted: true,
+    result: {
+      summary: "summary",
+      firstKeptEntryId: "entry-1",
+      tokensBefore: 120,
+      tokensAfter: 80,
+    },
+  });
   clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
   for (const sessionKey of resolveGatewayTestMainSessionKeys()) {
@@ -447,7 +474,7 @@ export function installGatewayTestHooks(options?: { scope?: "test" | "suite" }) 
       if (activeSuiteHookScopeCount === 0) {
         await cleanupGatewayTestHome({ restoreEnv: true });
       }
-    });
+    }, 300_000);
     return;
   }
 
@@ -530,27 +557,38 @@ export function onceMessage<T extends GatewayTestMessage = GatewayTestMessage>(
   timeoutMs = 10_000,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
-    const closeHandler = (code: number, reason: Buffer) => {
+    let timer: ReturnType<typeof setTimeout>;
+    function cleanup() {
       clearTimeout(timer);
       ws.off("message", handler);
+      ws.off("close", closeHandler);
+    }
+    function closeHandler(code: number, reason: Buffer) {
+      cleanup();
       reject(new Error(`closed ${code}: ${reason.toString()}`));
-    };
-    const handler = (data: WebSocket.RawData) => {
+    }
+    function handler(data: WebSocket.RawData) {
       const obj = JSON.parse(rawDataToString(data)) as T;
       if (filter(obj)) {
-        clearTimeout(timer);
-        ws.off("message", handler);
-        ws.off("close", closeHandler);
+        cleanup();
         resolve(obj);
       }
-    };
+    }
+    timer = setTimeout(() => {
+      cleanup();
+      reject(new Error("timeout"));
+    }, timeoutMs);
+    timer.unref?.();
     ws.on("message", handler);
     ws.once("close", closeHandler);
   });
 }
 
 export async function startGatewayServer(port: number, opts?: GatewayServerOptions) {
+  // Tests mutate testState-backed config before server startup; discard earlier
+  // helper reads so startup observes the current fixture state.
+  resetConfigRuntimeState();
+  clearSessionStoreCacheForTest();
   const mod = await getServerModule();
   const resolvedOpts =
     opts?.controlUiEnabled === undefined ? { ...opts, controlUiEnabled: false } : opts;
@@ -582,7 +620,7 @@ export async function startGatewayServer(port: number, opts?: GatewayServerOptio
   return server;
 }
 
-async function startGatewayServerWithRetries(params: {
+export async function startGatewayServerWithRetries(params: {
   port: number;
   opts?: GatewayServerOptions;
 }): Promise<{ port: number; server: Awaited<ReturnType<typeof startGatewayServer>> }> {
@@ -687,11 +725,7 @@ export async function createGatewaySuiteHarness(opts?: {
   };
 }
 
-export async function startServerWithClient(
-  token?: string,
-  opts?: GatewayServerOptions & { wsHeaders?: Record<string, string> },
-) {
-  const { wsHeaders, ...gatewayOpts } = opts ?? {};
+export async function startServer(token?: string, opts?: GatewayServerOptions) {
   let port = await getFreePort();
   const envSnapshot = captureEnv(["OPENCLAW_GATEWAY_TOKEN"]);
   const prev = process.env.OPENCLAW_GATEWAY_TOKEN;
@@ -710,19 +744,29 @@ export async function startServerWithClient(
   }
 
   const resolvedGatewayOpts: GatewayServerOptions =
-    fallbackToken && !gatewayOpts.auth
+    fallbackToken && !opts?.auth
       ? {
-          ...gatewayOpts,
+          ...opts,
           auth: { mode: "token", token: fallbackToken },
         }
-      : gatewayOpts;
+      : (opts ?? {});
 
   const started = await startGatewayServerWithRetries({ port, opts: resolvedGatewayOpts });
   port = started.port;
   const server = started.server;
 
+  return { server, port, prevToken: prev, envSnapshot };
+}
+
+export async function startServerWithClient(
+  token?: string,
+  opts?: GatewayServerOptions & { wsHeaders?: Record<string, string> },
+) {
+  const { wsHeaders, ...gatewayOpts } = opts ?? {};
+  const started = await startServer(token, gatewayOpts);
+  const { server, port, prevToken, envSnapshot } = started;
   const ws = await openTrackedWebSocket({ port, headers: wsHeaders });
-  return { server, ws, port, prevToken: prev, envSnapshot };
+  return { server, ws, port, prevToken, envSnapshot };
 }
 
 export async function startConnectedServerWithClient(
@@ -749,10 +793,12 @@ function resolveDefaultTestDeviceIdentityPath(params: {
   deviceFamily?: string;
   role: string;
 }) {
-  const safe =
-    `${params.clientId}-${params.clientMode}-${params.platform}-${params.deviceFamily ?? "none"}-${params.role}`
-      .replace(/[^a-zA-Z0-9._-]+/g, "_")
-      .toLowerCase();
+  const safe = normalizeLowercaseStringOrEmpty(
+    `${params.clientId}-${params.clientMode}-${params.platform}-${params.deviceFamily ?? "none"}-${params.role}`.replace(
+      /[^a-zA-Z0-9._-]+/g,
+      "_",
+    ),
+  );
   const suiteRoot = process.env.OPENCLAW_STATE_DIR ?? process.env.HOME ?? os.tmpdir();
   return path.join(suiteRoot, "test-device-identities", `${safe}.json`);
 }
@@ -767,11 +813,11 @@ export async function readConnectChallengeNonce(
   }
   trackConnectChallengeNonce(ws);
   try {
-    const evt = await onceMessage<{
-      type?: string;
-      event?: string;
-      payload?: Record<string, unknown> | null;
-    }>(ws, (o) => o.type === "event" && o.event === "connect.challenge", timeoutMs);
+    const evt = await onceMessage(
+      ws,
+      (o) => o.type === "event" && o.event === "connect.challenge",
+      timeoutMs,
+    );
     const nonce = (evt.payload as { nonce?: unknown } | undefined)?.nonce;
     if (typeof nonce === "string" && nonce.trim().length > 0) {
       (ws as TrackedWs)[CONNECT_CHALLENGE_NONCE_KEY] = nonce.trim();
@@ -858,8 +904,8 @@ export async function connectReq(
         ? ((testState.gatewayAuth as { password?: string }).password ?? undefined)
         : process.env.OPENCLAW_GATEWAY_PASSWORD;
   const token = opts?.token ?? defaultToken;
-  const bootstrapToken = opts?.bootstrapToken?.trim() || undefined;
-  const deviceToken = opts?.deviceToken?.trim() || undefined;
+  const bootstrapToken = normalizeOptionalString(opts?.bootstrapToken);
+  const deviceToken = normalizeOptionalString(opts?.deviceToken);
   const password = opts?.password ?? defaultPassword;
   const authTokenForSignature = resolveAuthTokenForSignature({
     token,
@@ -917,6 +963,14 @@ export async function connectReq(
       nonce: connectChallengeNonce,
     };
   })();
+  const isResponseForId = (o: unknown): boolean => {
+    if (!o || typeof o !== "object" || Array.isArray(o)) {
+      return false;
+    }
+    const rec = o as Record<string, unknown>;
+    return rec.type === "res" && rec.id === id;
+  };
+  const responsePromise = onceMessage<ConnectResponse>(ws, isResponseForId, opts?.timeoutMs);
   ws.send(
     JSON.stringify({
       type: "req",
@@ -944,14 +998,7 @@ export async function connectReq(
       },
     }),
   );
-  const isResponseForId = (o: unknown): boolean => {
-    if (!o || typeof o !== "object" || Array.isArray(o)) {
-      return false;
-    }
-    const rec = o as Record<string, unknown>;
-    return rec.type === "res" && rec.id === id;
-  };
-  return await onceMessage<ConnectResponse>(ws, isResponseForId, opts?.timeoutMs);
+  return await responsePromise;
 }
 
 export async function connectOk(ws: WebSocket, opts?: Parameters<typeof connectReq>[1]) {
@@ -999,6 +1046,7 @@ export async function connectWebchatClient(params: {
   return ws;
 }
 
+// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Gateway test RPC helper lets callers ascribe response payload shape.
 export async function rpcReq<T extends Record<string, unknown>>(
   ws: WebSocket,
   method: string,
@@ -1015,8 +1063,7 @@ export async function rpcReq<T extends Record<string, unknown>>(
   clearSessionStoreCacheForTest();
   const { randomUUID } = await import("node:crypto");
   const id = randomUUID();
-  ws.send(JSON.stringify({ type: "req", id, method, params }));
-  return await onceMessage<{
+  const responsePromise = onceMessage<{
     type: "res";
     id: string;
     ok: boolean;
@@ -1033,6 +1080,8 @@ export async function rpcReq<T extends Record<string, unknown>>(
     },
     timeoutMs,
   );
+  ws.send(JSON.stringify({ type: "req", id, method, params }));
+  return await responsePromise;
 }
 
 export async function waitForSystemEvent(timeoutMs = 2000) {

@@ -1,6 +1,5 @@
 import type {
-  BlockStreamingChunkConfig,
-  BlockStreamingCoalesceConfig,
+  ChannelPreviewStreamingConfig,
   ContextVisibilityMode,
   DmPolicy,
   GroupPolicy,
@@ -68,7 +67,7 @@ export type TelegramExecApprovalTarget = "dm" | "channel" | "both";
 export type TelegramExecApprovalConfig = {
   /** Enable mode for Telegram exec approvals on this account. Default: auto when approvers can be resolved; false disables. */
   enabled?: import("./types.approvals.js").NativeExecApprovalEnableMode;
-  /** Telegram user IDs allowed to approve exec requests. Optional: falls back to numeric owner IDs inferred from allowFrom/defaultTo when possible. */
+  /** Telegram user IDs allowed to approve exec requests. Optional: falls back to numeric owner IDs inferred from commands.ownerAllowFrom when possible. */
   approvers?: Array<string | number>;
   /** Only forward approvals for these agent IDs. Omit = all agents. */
   agentFilter?: string[];
@@ -120,7 +119,7 @@ export type TelegramAccountConfig = {
   botToken?: string;
   /** Path to a regular file containing the bot token; symlinks are rejected. */
   tokenFile?: string;
-  /** Control reply threading when reply tags are present (off|first|all). */
+  /** Control reply threading when reply tags are present (off|first|all|batched). */
   replyToMode?: ReplyToMode;
   groups?: Record<string, TelegramGroupConfig>;
   /** Per-DM configuration for Telegram DM topics (key is chat ID). */
@@ -148,25 +147,13 @@ export type TelegramAccountConfig = {
   dms?: Record<string, DmConfig>;
   /** Outbound text chunk size (chars). Default: 4000. */
   textChunkLimit?: number;
-  /** Chunking mode: "length" (default) splits by size; "newline" splits on every newline. */
-  chunkMode?: "length" | "newline";
-  /**
-   * Stream preview mode:
-   * - "off": disable preview updates
-   * - "partial": edit a single preview message
-   * - "block": stream in larger chunked updates
-   * - "progress": alias that maps to "partial" on Telegram
-   */
-  streaming?: TelegramStreamingMode;
-  /** Disable block streaming for this account. */
-  blockStreaming?: boolean;
-  /** Draft block-stream chunking thresholds for Telegram preview edits. */
-  draftChunk?: BlockStreamingChunkConfig;
-  /** Merge streamed block replies before sending. */
-  blockStreamingCoalesce?: BlockStreamingCoalesceConfig;
+  /** Streaming + chunking settings. Prefer this nested shape over legacy flat keys. */
+  streaming?: ChannelPreviewStreamingConfig;
   mediaMaxMb?: number;
   /** Telegram API client timeout in seconds (grammY ApiClientOptions). */
   timeoutSeconds?: number;
+  /** Telegram polling watchdog threshold in milliseconds. Default: 120000. */
+  pollingStallThresholdMs?: number;
   /** Retry policy for outbound Telegram API calls. */
   retry?: OutboundRetryConfig;
   /** Network transport overrides for Telegram. */
@@ -225,7 +212,7 @@ export type TelegramAccountConfig = {
    * Telegram expects unicode emoji (e.g., "👀") rather than shortcodes.
    */
   ackReaction?: string;
-  /** Custom Telegram Bot API root URL (e.g. "https://my-proxy.example.com" or a local Bot API server). */
+  /** Custom Telegram Bot API root URL (e.g. "https://my-proxy.example.com" or a local Bot API server), not a /bot<TOKEN> endpoint. */
   apiRoot?: string;
   /** Trusted local filesystem roots for self-hosted Telegram Bot API absolute file_path values. */
   trustedLocalFileRoots?: string[];

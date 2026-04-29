@@ -1,18 +1,32 @@
-import { ChannelType, type Client } from "@buape/carbon";
-import { Routes, type APIAttachment, type APIStickerItem } from "discord-api-types/v10";
-import {
-  resolveChannelModelOverride,
-  type OpenClawConfig,
-  type ReplyToMode,
-} from "openclaw/plugin-sdk/config-runtime";
+import type { APIAttachment, APIStickerItem } from "discord-api-types/v10";
+import type { OpenClawConfig, ReplyToMode } from "openclaw/plugin-sdk/config-types";
+import { resolveChannelModelOverride } from "openclaw/plugin-sdk/model-session-runtime";
 import { createReplyReferencePlanner } from "openclaw/plugin-sdk/reply-reference";
 import { buildAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-runtime";
+import {
+  normalizeOptionalString,
+  normalizeOptionalStringifiedId,
+  truncateUtf16Safe,
+} from "openclaw/plugin-sdk/text-runtime";
+import {
+  ChannelType,
+  createThread,
+  editChannel,
+  getChannelMessage,
+  type Client,
+  type MessageCreateListener,
+} from "../internal/discord.js";
 import type { DiscordChannelConfigResolved } from "./allow-list.js";
-import type { DiscordMessageEvent } from "./listeners.js";
+import {
+  resolveDiscordChannelIdSafe,
+  resolveDiscordChannelNameSafe,
+  resolveDiscordChannelParentIdSafe,
+  resolveDiscordChannelParentSafe,
+} from "./channel-access.js";
 import {
   resolveDiscordChannelInfo,
+  type DiscordChannelInfoClient,
   resolveDiscordEmbedText,
   resolveDiscordForwardedMessagesTextFromSnapshots,
   resolveDiscordMessageChannelId,
@@ -75,6 +89,7 @@ type DiscordThreadStarterRestMessage = {
   author?: DiscordThreadStarterRestAuthor | null;
   timestamp?: string | null;
 };
+type DiscordMessageEvent = Parameters<MessageCreateListener["handle"]>[0];
 
 // Cache entry with timestamp for TTL-based eviction
 type DiscordThreadStarterCacheEntry = {
@@ -189,13 +204,17 @@ export function resolveDiscordThreadChannel(params: {
 }
 
 export async function resolveDiscordThreadParentInfo(params: {
-  client: Client;
+  client: DiscordChannelInfoClient;
   threadChannel: DiscordThreadChannel;
   channelInfo: import("./message-utils.js").DiscordChannelInfo | null;
 }): Promise<DiscordThreadParentInfo> {
   const { threadChannel, channelInfo, client } = params;
+  const parent = resolveDiscordChannelParentSafe(threadChannel);
   let parentId =
-    threadChannel.parentId ?? threadChannel.parent?.id ?? channelInfo?.parentId ?? undefined;
+    resolveDiscordChannelParentIdSafe(threadChannel) ??
+    resolveDiscordChannelIdSafe(parent) ??
+    channelInfo?.parentId ??
+    undefined;
   if (!parentId && threadChannel.id) {
     const threadInfo = await resolveDiscordChannelInfo(client, threadChannel.id);
     parentId = threadInfo?.parentId ?? undefined;
@@ -203,7 +222,7 @@ export async function resolveDiscordThreadParentInfo(params: {
   if (!parentId) {
     return {};
   }
-  let parentName = threadChannel.parent?.name;
+  let parentName = resolveDiscordChannelNameSafe(parent);
   const parentInfo = await resolveDiscordChannelInfo(client, parentId);
   parentName = parentName ?? parentInfo?.name;
   const parentType = parentInfo?.type;
@@ -263,8 +282,10 @@ async function fetchDiscordThreadStarterMessage(params: {
   messageChannelId: string;
   threadId: string;
 }): Promise<DiscordThreadStarterRestMessage | null> {
-  const starter = await params.client.rest.get(
-    Routes.channelMessage(params.messageChannelId, params.threadId),
+  const starter = await getChannelMessage(
+    params.client.rest,
+    params.messageChannelId,
+    params.threadId,
   );
   return starter ? (starter as DiscordThreadStarterRestMessage) : null;
 }
@@ -285,7 +306,7 @@ function buildDiscordThreadStarterPayload(params: {
 }
 
 function resolveDiscordThreadStarterText(starter: DiscordThreadStarterRestMessage): string {
-  const content = starter.content?.trim() ?? "";
+  const content = normalizeOptionalString(starter.content) ?? "";
   const embedText = resolveDiscordEmbedText(starter.embeds?.[0]);
   const forwardedText = resolveDiscordForwardedMessagesTextFromSnapshots(starter.message_snapshots);
   return content || embedText || forwardedText;
@@ -330,7 +351,7 @@ function resolveDiscordThreadStarterAuthorTag(
 function resolveDiscordThreadStarterRoleIds(
   member: DiscordThreadStarterRestMember | null | undefined,
 ): string[] | undefined {
-  return Array.isArray(member?.roles) ? member.roles.map((roleId) => String(roleId)) : undefined;
+  return Array.isArray(member?.roles) ? member.roles : undefined;
 }
 
 export function resolveDiscordReplyTarget(opts: {
@@ -341,7 +362,7 @@ export function resolveDiscordReplyTarget(opts: {
   if (opts.replyToMode === "off") {
     return undefined;
   }
-  const replyToId = opts.replyToId?.trim();
+  const replyToId = normalizeOptionalString(opts.replyToId);
   if (!replyToId) {
     return undefined;
   }
@@ -375,7 +396,8 @@ export type DiscordAutoThreadContext = {
   To: string;
   OriginatingTo: string;
   SessionKey: string;
-  ParentSessionKey: string;
+  ModelParentSessionKey?: string;
+  ParentSessionKey?: string;
 };
 
 export function resolveDiscordAutoThreadContext(params: {
@@ -383,12 +405,13 @@ export function resolveDiscordAutoThreadContext(params: {
   channel: string;
   messageChannelId: string;
   createdThreadId?: string | null;
+  parentInheritanceEnabled?: boolean;
 }): DiscordAutoThreadContext | null {
-  const createdThreadId = String(params.createdThreadId ?? "").trim();
+  const createdThreadId = normalizeOptionalStringifiedId(params.createdThreadId) ?? "";
   if (!createdThreadId) {
     return null;
   }
-  const messageChannelId = params.messageChannelId.trim();
+  const messageChannelId = normalizeOptionalString(params.messageChannelId) ?? "";
   if (!messageChannelId) {
     return null;
   }
@@ -410,7 +433,8 @@ export function resolveDiscordAutoThreadContext(params: {
     To: `channel:${createdThreadId}`,
     OriginatingTo: `channel:${createdThreadId}`,
     SessionKey: threadSessionKey,
-    ParentSessionKey: parentSessionKey,
+    ModelParentSessionKey: parentSessionKey,
+    ...(params.parentInheritanceEnabled === true ? { ParentSessionKey: parentSessionKey } : {}),
   };
 }
 
@@ -432,7 +456,7 @@ type MaybeCreateDiscordAutoThreadParams = {
   channelDescription?: string;
   baseText: string;
   combinedBody: string;
-  cfg?: OpenClawConfig;
+  cfg: OpenClawConfig;
   agentId?: string;
 };
 
@@ -441,7 +465,8 @@ export async function resolveDiscordAutoThreadReplyPlan(
     replyToMode: ReplyToMode;
     agentId: string;
     channel: string;
-    cfg?: OpenClawConfig;
+    cfg: OpenClawConfig;
+    threadParentInheritanceEnabled?: boolean;
   },
 ): Promise<DiscordAutoThreadReplyPlan> {
   const messageChannelId = resolveTrimmedDiscordMessageChannelId(params);
@@ -477,6 +502,7 @@ export async function resolveDiscordAutoThreadReplyPlan(
         channel: params.channel,
         messageChannelId,
         createdThreadId,
+        parentInheritanceEnabled: params.threadParentInheritanceEnabled,
       })
     : null;
   return { ...deliveryPlan, createdThreadId, autoThreadContext };
@@ -517,16 +543,18 @@ export async function maybeCreateDiscordAutoThread(
       ? Number(params.channelConfig.autoArchiveDuration)
       : 60;
 
-    const created = (await params.client.rest.post(
-      `${Routes.channelMessage(messageChannelId, params.message.id)}/threads`,
+    const created = await createThread<{ id?: string }>(
+      params.client.rest,
+      messageChannelId,
       {
         body: {
           name: threadName,
           auto_archive_duration: archiveDuration,
         },
       },
-    )) as { id?: string };
-    const createdId = created?.id ? String(created.id) : "";
+      params.message.id,
+    );
+    const createdId = created?.id || "";
     if (
       createdId &&
       params.channelConfig?.autoThreadName === "generated" &&
@@ -562,10 +590,14 @@ export async function maybeCreateDiscordAutoThread(
     // Race condition: another agent may have already created a thread on this
     // message. Re-fetch the message to check for an existing thread.
     try {
-      const msg = (await params.client.rest.get(
-        Routes.channelMessage(messageChannelId, params.message.id),
-      )) as { thread?: { id?: string } };
-      const existingThreadId = msg?.thread?.id ? String(msg.thread.id) : "";
+      const msg = (await getChannelMessage(
+        params.client.rest,
+        messageChannelId,
+        params.message.id,
+      )) as {
+        thread?: { id?: string };
+      };
+      const existingThreadId = msg?.thread?.id || "";
       if (existingThreadId) {
         logVerbose(
           `discord: autoThread reusing existing thread ${existingThreadId} on ${messageChannelId}/${params.message.id}`,
@@ -639,7 +671,7 @@ async function maybeRenameDiscordAutoThread(params: {
     if (!nextName || nextName === params.currentName || nextName === fallbackName) {
       return;
     }
-    await params.client.rest.patch(Routes.channel(params.threadId), {
+    await editChannel(params.client.rest, params.threadId, {
       body: { name: nextName },
     });
   } catch (err) {
@@ -671,32 +703,4 @@ export function resolveDiscordReplyDeliveryPlan(params: {
     allowReference,
   });
   return { deliverTarget, replyTarget, replyReference };
-}
-
-/**
- * Extract text from forwarded message snapshots for thread starter resolution.
- * Discord forwarded messages have empty `content` and store the original text
- * in `message_snapshots[0].message.content`.
- */
-function resolveStarterForwardedText(
-  snapshots?: Array<{
-    message?: {
-      content?: string | null;
-      attachments?: unknown[];
-      embeds?: Array<{ title?: string | null; description?: string | null }>;
-      sticker_items?: unknown[];
-    };
-  }>,
-): string {
-  if (!Array.isArray(snapshots) || snapshots.length === 0) {
-    return "";
-  }
-  const blocks: string[] = [];
-  for (const snapshot of snapshots) {
-    const msg = snapshot.message;
-    if (!msg) continue;
-    const text = msg.content?.trim() || resolveDiscordEmbedText(msg.embeds?.[0]) || "";
-    if (text) blocks.push(`[Forwarded message]\n${text}`);
-  }
-  return blocks.join("\n\n");
 }

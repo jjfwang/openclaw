@@ -20,11 +20,13 @@ export type {
   AcpRuntimeEvent,
   AcpRuntimeHandle,
   AcpRuntimeStatus,
+  AcpRuntimeTurnAttachment,
   AcpRuntimeTurnInput,
   AcpSessionUpdateTag,
 } from "../acp/runtime/types.js";
 export { readAcpSessionEntry } from "../acp/runtime/session-meta.js";
 export type { AcpSessionStoreEntry } from "../acp/runtime/session-meta.js";
+export { tryDispatchAcpReplyHook } from "./acp-runtime-backend.js";
 
 // Keep test helpers off the hot init path. Eagerly merging them here can
 // create a back-edge through the bundled ACP runtime chunk before the imported

@@ -62,6 +62,18 @@ const matrixNetworkSchema = z
   .strict()
   .optional();
 
+const matrixStreamingSchema = z
+  .object({
+    mode: z.enum(["partial", "quiet", "off"]).optional(),
+    preview: z
+      .object({
+        toolProgress: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 export const MatrixConfigSchema = z.object({
   name: z.string().optional(),
   enabled: z.boolean().optional(),
@@ -84,8 +96,10 @@ export const MatrixConfigSchema = z.object({
   groupPolicy: GroupPolicySchema.optional(),
   contextVisibility: ContextVisibilityModeSchema.optional(),
   blockStreaming: z.boolean().optional(),
-  streaming: z.union([z.enum(["partial", "off"]), z.boolean()]).optional(),
-  replyToMode: z.enum(["off", "first", "all"]).optional(),
+  streaming: z
+    .union([z.enum(["partial", "quiet", "off"]), z.boolean(), matrixStreamingSchema])
+    .optional(),
+  replyToMode: z.enum(["off", "first", "all", "batched"]).optional(),
   threadReplies: z.enum(["off", "inbound", "always"]).optional(),
   textChunkLimit: z.number().optional(),
   chunkMode: z.enum(["length", "newline"]).optional(),
@@ -104,6 +118,7 @@ export const MatrixConfigSchema = z.object({
   autoJoinAllowlist: AllowFromListSchema,
   groupAllowFrom: AllowFromListSchema,
   dm: buildNestedDmConfigSchema({
+    sessionScope: z.enum(["per-user", "per-room"]).optional(),
     threadReplies: z.enum(["off", "inbound", "always"]).optional(),
   }),
   execApprovals: matrixExecApprovalsSchema,

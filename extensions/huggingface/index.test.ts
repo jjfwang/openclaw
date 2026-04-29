@@ -1,5 +1,5 @@
+import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
-import { createTestPluginApi } from "../../test/helpers/plugins/plugin-api.js";
 
 const buildHuggingfaceProviderMock = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -45,10 +45,20 @@ function registerProviderWithPluginConfig(pluginConfig: Record<string, unknown>)
 
 describe("huggingface plugin", () => {
   it("skips catalog discovery when plugin discovery is disabled", async () => {
-    const provider = registerProviderWithPluginConfig({ discovery: { enabled: false } });
+    const provider = registerProvider();
 
     const result = await provider.catalog.run({
-      config: {},
+      config: {
+        plugins: {
+          entries: {
+            huggingface: {
+              config: {
+                discovery: { enabled: false },
+              },
+            },
+          },
+        },
+      },
       resolveProviderApiKey: () => ({
         apiKey: "hf_test_token",
         discoveryApiKey: "hf_test_token",

@@ -19,6 +19,11 @@ const LAZY_LOCALES: readonly LazyLocale[] = [
   "ja-JP",
   "ko",
   "fr",
+  "tr",
+  "uk",
+  "id",
+  "pl",
+  "th",
 ];
 
 const LAZY_LOCALE_REGISTRY: Record<LazyLocale, LazyLocaleRegistration> = {
@@ -54,6 +59,26 @@ const LAZY_LOCALE_REGISTRY: Record<LazyLocale, LazyLocaleRegistration> = {
     exportName: "fr",
     loader: () => import("../locales/fr.ts"),
   },
+  tr: {
+    exportName: "tr",
+    loader: () => import("../locales/tr.ts"),
+  },
+  uk: {
+    exportName: "uk",
+    loader: () => import("../locales/uk.ts"),
+  },
+  id: {
+    exportName: "id",
+    loader: () => import("../locales/id.ts"),
+  },
+  pl: {
+    exportName: "pl",
+    loader: () => import("../locales/pl.ts"),
+  },
+  th: {
+    exportName: "th",
+    loader: () => import("../locales/th.ts"),
+  },
 };
 
 export const SUPPORTED_LOCALES: ReadonlyArray<Locale> = [DEFAULT_LOCALE, ...LAZY_LOCALES];
@@ -87,6 +112,21 @@ export function resolveNavigatorLocale(navLang: string): Locale {
   }
   if (navLang.startsWith("fr")) {
     return "fr";
+  }
+  if (navLang.startsWith("tr")) {
+    return "tr";
+  }
+  if (navLang.startsWith("uk")) {
+    return "uk";
+  }
+  if (navLang.startsWith("id")) {
+    return "id";
+  }
+  if (navLang.startsWith("pl")) {
+    return "pl";
+  }
+  if (navLang.startsWith("th")) {
+    return "th";
   }
   return DEFAULT_LOCALE;
 }

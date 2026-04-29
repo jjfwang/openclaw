@@ -7,10 +7,14 @@ import {
   createTypedHook,
   HOOK_ONLY_MESSAGE,
   LEGACY_BEFORE_AGENT_START_MESSAGE,
+  LEGACY_IMPLICIT_STARTUP_SIDECAR_MESSAGE,
 } from "./status.test-helpers.js";
 
 const loadConfigMock = vi.fn();
 const loadOpenClawPluginsMock = vi.fn();
+const loadPluginMetadataRegistrySnapshotMock = vi.fn();
+const loadPluginRegistrySnapshotWithMetadataMock = vi.fn();
+const loadPluginManifestRegistryForInstalledIndexMock = vi.fn();
 const applyPluginAutoEnableMock = vi.fn();
 const resolveBundledProviderCompatPluginIdsMock = vi.fn();
 const withBundledPluginAllowlistCompatMock = vi.fn();
@@ -18,6 +22,7 @@ const withBundledPluginEnablementCompatMock = vi.fn();
 const listImportedBundledPluginFacadeIdsMock = vi.fn();
 const listImportedRuntimePluginIdsMock = vi.fn();
 let buildPluginSnapshotReport: typeof import("./status.js").buildPluginSnapshotReport;
+let buildPluginRegistrySnapshotReport: typeof import("./status.js").buildPluginRegistrySnapshotReport;
 let buildPluginDiagnosticsReport: typeof import("./status.js").buildPluginDiagnosticsReport;
 let buildPluginInspectReport: typeof import("./status.js").buildPluginInspectReport;
 let buildAllPluginInspectReports: typeof import("./status.js").buildAllPluginInspectReports;
@@ -27,6 +32,7 @@ let formatPluginCompatibilityNotice: typeof import("./status.js").formatPluginCo
 let summarizePluginCompatibility: typeof import("./status.js").summarizePluginCompatibility;
 
 vi.mock("../config/config.js", () => ({
+  getRuntimeConfig: () => loadConfigMock(),
   loadConfig: () => loadConfigMock(),
 }));
 
@@ -36,6 +42,21 @@ vi.mock("../config/plugin-auto-enable.js", () => ({
 
 vi.mock("./loader.js", () => ({
   loadOpenClawPlugins: (...args: unknown[]) => loadOpenClawPluginsMock(...args),
+}));
+
+vi.mock("./runtime/metadata-registry-loader.js", () => ({
+  loadPluginMetadataRegistrySnapshot: (...args: unknown[]) =>
+    loadPluginMetadataRegistrySnapshotMock(...args),
+}));
+
+vi.mock("./plugin-registry.js", () => ({
+  loadPluginRegistrySnapshotWithMetadata: (...args: unknown[]) =>
+    loadPluginRegistrySnapshotWithMetadataMock(...args),
+}));
+
+vi.mock("./manifest-registry-installed.js", () => ({
+  loadPluginManifestRegistryForInstalledIndex: (...args: unknown[]) =>
+    loadPluginManifestRegistryForInstalledIndexMock(...args),
 }));
 
 vi.mock("./providers.js", () => ({
@@ -56,6 +77,7 @@ vi.mock("../plugin-sdk/facade-runtime.js", () => ({
 }));
 
 vi.mock("./runtime.js", () => ({
+  getActivePluginChannelRegistry: () => null,
   listImportedRuntimePluginIds: (...args: unknown[]) => listImportedRuntimePluginIdsMock(...args),
 }));
 
@@ -69,12 +91,12 @@ vi.mock("../agents/workspace.js", () => ({
 }));
 
 function setPluginLoadResult(overrides: Partial<ReturnType<typeof createPluginLoadResult>>) {
-  loadOpenClawPluginsMock.mockReturnValue(
-    createPluginLoadResult({
-      plugins: [],
-      ...overrides,
-    }),
-  );
+  const result = createPluginLoadResult({
+    plugins: [],
+    ...overrides,
+  });
+  loadOpenClawPluginsMock.mockReturnValue(result);
+  loadPluginMetadataRegistrySnapshotMock.mockReturnValue(result);
 }
 
 function setSinglePluginLoadResult(
@@ -85,6 +107,23 @@ function setSinglePluginLoadResult(
     plugins: [plugin],
     ...overrides,
   });
+}
+
+function createInstalledPluginIndexSnapshot(
+  plugins: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  return {
+    version: 1,
+    warning: "test",
+    hostContractVersion: "test",
+    compatRegistryVersion: "test",
+    migrationVersion: 1,
+    policyHash: "test",
+    generatedAtMs: 0,
+    installRecords: {},
+    plugins,
+    diagnostics: [],
+  };
 }
 
 function expectInspectReport(
@@ -104,6 +143,7 @@ function expectPluginLoaderCall(params: {
   autoEnabledReasons?: Record<string, string[]>;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
+  logger?: unknown;
   loadModules?: boolean;
 }) {
   expect(loadOpenClawPluginsMock).toHaveBeenCalledWith(
@@ -117,24 +157,38 @@ function expectPluginLoaderCall(params: {
         : {}),
       ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
       ...(params.env ? { env: params.env } : {}),
+      ...(params.logger !== undefined ? { logger: params.logger } : {}),
       ...(params.loadModules !== undefined ? { loadModules: params.loadModules } : {}),
     }),
   );
 }
 
-function expectAutoEnabledStatusLoad(params: {
-  rawConfig: unknown;
-  autoEnabledConfig: unknown;
-  autoEnabledReasons?: Record<string, string[]>;
+function expectMetadataSnapshotLoaderCall(params: {
+  config?: unknown;
+  activationSourceConfig?: unknown;
+  workspaceDir?: string;
+  env?: NodeJS.ProcessEnv;
+  logger?: unknown;
+  loadModules?: boolean;
 }) {
+  expect(loadPluginMetadataRegistrySnapshotMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      ...(params.config !== undefined ? { config: params.config } : {}),
+      ...(params.activationSourceConfig !== undefined
+        ? { activationSourceConfig: params.activationSourceConfig }
+        : {}),
+      ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
+      ...(params.env ? { env: params.env } : {}),
+      ...(params.logger !== undefined ? { logger: params.logger } : {}),
+      ...(params.loadModules !== undefined ? { loadModules: params.loadModules } : {}),
+    }),
+  );
+}
+
+function expectAutoEnabledStatusLoad(params: { rawConfig: unknown }) {
   expect(applyPluginAutoEnableMock).toHaveBeenCalledWith({
     config: params.rawConfig,
     env: process.env,
-  });
-  expectPluginLoaderCall({
-    config: params.autoEnabledConfig,
-    activationSourceConfig: params.rawConfig,
-    autoEnabledReasons: params.autoEnabledReasons ?? {},
   });
 }
 
@@ -159,6 +213,7 @@ function expectBundledCompatChainApplied(params: {
   pluginIds: string[];
   compatConfig: unknown;
   enabledConfig: unknown;
+  loadModules: boolean;
 }) {
   expect(withBundledPluginAllowlistCompatMock).toHaveBeenCalledWith({
     config: params.config,
@@ -168,7 +223,11 @@ function expectBundledCompatChainApplied(params: {
     config: params.compatConfig,
     pluginIds: params.pluginIds,
   });
-  expectPluginLoaderCall({ config: params.enabledConfig });
+  if (params.loadModules) {
+    expectPluginLoaderCall({ config: params.enabledConfig, loadModules: true });
+    return;
+  }
+  expectMetadataSnapshotLoaderCall({ config: params.enabledConfig, loadModules: false });
 }
 
 function createAutoEnabledStatusConfig(
@@ -186,6 +245,50 @@ function createAutoEnabledStatusConfig(
     },
   };
   return { rawConfig, autoEnabledConfig };
+}
+
+function expectAutoEnabledDemoCompatibilityNoticesPreserveRawConfig() {
+  const { rawConfig, autoEnabledConfig } = createAutoEnabledStatusConfig(
+    {
+      demo: { enabled: true },
+    },
+    { channels: { demo: { enabled: true } } },
+  );
+  const autoEnabledReasons = {
+    demo: ["demo configured"],
+  };
+  applyPluginAutoEnableMock.mockReturnValue({
+    config: autoEnabledConfig,
+    changes: [],
+    autoEnabledReasons,
+  });
+  setSinglePluginLoadResult(
+    createPluginRecord({
+      id: "demo",
+      name: "Demo",
+      description: "Auto-enabled plugin",
+      origin: "bundled",
+      hookCount: 1,
+    }),
+    {
+      typedHooks: [createTypedHook({ pluginId: "demo", hookName: "before_agent_start" })],
+    },
+  );
+
+  expect(buildPluginCompatibilityNotices({ config: rawConfig })).toEqual([
+    createCompatibilityNotice({ pluginId: "demo", code: "legacy-before-agent-start" }),
+    createCompatibilityNotice({ pluginId: "demo", code: "hook-only" }),
+  ]);
+
+  expectAutoEnabledStatusLoad({
+    rawConfig,
+  });
+  expectPluginLoaderCall({
+    config: autoEnabledConfig,
+    activationSourceConfig: rawConfig,
+    autoEnabledReasons,
+    loadModules: true,
+  });
 }
 
 function expectNoCompatibilityWarnings() {
@@ -249,6 +352,7 @@ describe("plugin status reports", () => {
       buildPluginDiagnosticsReport,
       buildPluginCompatibilityWarnings,
       buildPluginInspectReport,
+      buildPluginRegistrySnapshotReport,
       buildPluginSnapshotReport,
       formatPluginCompatibilityNotice,
       summarizePluginCompatibility,
@@ -258,6 +362,9 @@ describe("plugin status reports", () => {
   beforeEach(() => {
     loadConfigMock.mockReset();
     loadOpenClawPluginsMock.mockReset();
+    loadPluginMetadataRegistrySnapshotMock.mockReset();
+    loadPluginRegistrySnapshotWithMetadataMock.mockReset();
+    loadPluginManifestRegistryForInstalledIndexMock.mockReset();
     applyPluginAutoEnableMock.mockReset();
     resolveBundledProviderCompatPluginIdsMock.mockReset();
     withBundledPluginAllowlistCompatMock.mockReset();
@@ -265,6 +372,15 @@ describe("plugin status reports", () => {
     listImportedBundledPluginFacadeIdsMock.mockReset();
     listImportedRuntimePluginIdsMock.mockReset();
     loadConfigMock.mockReturnValue({});
+    loadPluginRegistrySnapshotWithMetadataMock.mockReturnValue({
+      snapshot: createInstalledPluginIndexSnapshot([]),
+      source: "derived",
+      diagnostics: [],
+    });
+    loadPluginManifestRegistryForInstalledIndexMock.mockReturnValue({
+      plugins: [],
+      diagnostics: [],
+    });
     applyPluginAutoEnableMock.mockImplementation((params: { config: unknown }) => ({
       config: params.config,
       changes: [],
@@ -291,7 +407,7 @@ describe("plugin status reports", () => {
       env,
     });
 
-    expectPluginLoaderCall({
+    expectMetadataSnapshotLoaderCall({
       config: {},
       workspaceDir: "/workspace",
       env,
@@ -299,16 +415,71 @@ describe("plugin status reports", () => {
     });
   });
 
-  it("uses a non-activating snapshot load for snapshot reports", () => {
+  it("forwards an explicit logger to plugin loading", () => {
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    buildPluginSnapshotReport({
+      config: {},
+      logger,
+      workspaceDir: "/workspace",
+    });
+
+    expectMetadataSnapshotLoaderCall({
+      config: {},
+      logger,
+      workspaceDir: "/workspace",
+      loadModules: false,
+    });
+  });
+
+  it("carries installed-index compatibility metadata into registry snapshot reports", () => {
+    loadPluginRegistrySnapshotWithMetadataMock.mockReturnValue({
+      snapshot: createInstalledPluginIndexSnapshot([
+        {
+          pluginId: "legacy-sidecar",
+          manifestPath: "/tmp/legacy-sidecar/openclaw.plugin.json",
+          manifestHash: "manifest-hash",
+          rootDir: "/tmp/legacy-sidecar",
+          origin: "workspace",
+          enabled: true,
+          startup: {
+            sidecar: true,
+            memory: false,
+            deferConfiguredChannelFullLoadUntilAfterListen: false,
+            agentHarnesses: [],
+          },
+          compat: ["legacy-implicit-startup-sidecar"],
+        },
+      ]),
+      source: "derived",
+      diagnostics: [],
+    });
+    loadPluginManifestRegistryForInstalledIndexMock.mockReturnValue({
+      plugins: [{ id: "legacy-sidecar", name: "Legacy Sidecar" }],
+      diagnostics: [],
+    });
+
+    const report = buildPluginRegistrySnapshotReport({ config: {} });
+
+    expect(report.plugins[0]).toMatchObject({
+      id: "legacy-sidecar",
+      compat: ["legacy-implicit-startup-sidecar"],
+    });
+  });
+
+  it("uses a metadata snapshot load for snapshot reports", () => {
     buildPluginSnapshotReport({ config: {}, workspaceDir: "/workspace" });
 
-    expect(loadOpenClawPluginsMock).toHaveBeenCalledWith(
+    expect(loadPluginMetadataRegistrySnapshotMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        activate: false,
-        cache: false,
         loadModules: false,
       }),
     );
+    expect(loadOpenClawPluginsMock).not.toHaveBeenCalled();
   });
 
   it("loads plugin status from the auto-enabled config snapshot", () => {
@@ -330,12 +501,12 @@ describe("plugin status reports", () => {
 
     expectAutoEnabledStatusLoad({
       rawConfig,
-      autoEnabledConfig,
-      autoEnabledReasons: {
-        demo: ["demo configured"],
-      },
     });
-    expectPluginLoaderCall({ loadModules: false });
+    expectMetadataSnapshotLoaderCall({
+      config: autoEnabledConfig,
+      activationSourceConfig: rawConfig,
+      loadModules: false,
+    });
   });
 
   it("uses the auto-enabled config snapshot for inspect policy summaries", () => {
@@ -345,7 +516,7 @@ describe("plugin status reports", () => {
           enabled: true,
           subagent: {
             allowModelOverride: true,
-            allowedModels: ["openai/gpt-5.4"],
+            allowedModels: ["openai/gpt-5.5"],
             hasAllowedModelsConfig: true,
           },
         },
@@ -374,53 +545,16 @@ describe("plugin status reports", () => {
     expect(inspect).not.toBeNull();
     expectInspectPolicy(inspect!, {
       allowPromptInjection: undefined,
+      allowConversationAccess: undefined,
       allowModelOverride: true,
-      allowedModels: ["openai/gpt-5.4"],
+      allowedModels: ["openai/gpt-5.5"],
       hasAllowedModelsConfig: true,
     });
     expectPluginLoaderCall({ loadModules: true });
   });
 
   it("preserves raw config activation context when compatibility notices build their own report", () => {
-    const { rawConfig, autoEnabledConfig } = createAutoEnabledStatusConfig(
-      {
-        demo: { enabled: true },
-      },
-      { channels: { demo: { enabled: true } } },
-    );
-    applyPluginAutoEnableMock.mockReturnValue({
-      config: autoEnabledConfig,
-      changes: [],
-      autoEnabledReasons: {
-        demo: ["demo configured"],
-      },
-    });
-    setSinglePluginLoadResult(
-      createPluginRecord({
-        id: "demo",
-        name: "Demo",
-        description: "Auto-enabled plugin",
-        origin: "bundled",
-        hookCount: 1,
-      }),
-      {
-        typedHooks: [createTypedHook({ pluginId: "demo", hookName: "before_agent_start" })],
-      },
-    );
-
-    expect(buildPluginCompatibilityNotices({ config: rawConfig })).toEqual([
-      createCompatibilityNotice({ pluginId: "demo", code: "legacy-before-agent-start" }),
-      createCompatibilityNotice({ pluginId: "demo", code: "hook-only" }),
-    ]);
-
-    expectAutoEnabledStatusLoad({
-      rawConfig,
-      autoEnabledConfig,
-      autoEnabledReasons: {
-        demo: ["demo configured"],
-      },
-    });
-    expectPluginLoaderCall({ loadModules: true });
+    expectAutoEnabledDemoCompatibilityNoticesPreserveRawConfig();
   });
 
   it("applies the full bundled provider compat chain before loading plugins", () => {
@@ -437,48 +571,12 @@ describe("plugin status reports", () => {
       pluginIds,
       compatConfig,
       enabledConfig,
+      loadModules: false,
     });
   });
 
   it("preserves raw config activation context for compatibility-derived reports", () => {
-    const { rawConfig, autoEnabledConfig } = createAutoEnabledStatusConfig(
-      {
-        demo: { enabled: true },
-      },
-      { channels: { demo: { enabled: true } } },
-    );
-    applyPluginAutoEnableMock.mockReturnValue({
-      config: autoEnabledConfig,
-      changes: [],
-      autoEnabledReasons: {
-        demo: ["demo configured"],
-      },
-    });
-    setSinglePluginLoadResult(
-      createPluginRecord({
-        id: "demo",
-        name: "Demo",
-        description: "Auto-enabled plugin",
-        origin: "bundled",
-        hookCount: 1,
-      }),
-      {
-        typedHooks: [createTypedHook({ pluginId: "demo", hookName: "before_agent_start" })],
-      },
-    );
-
-    expect(buildPluginCompatibilityNotices({ config: rawConfig })).toEqual([
-      createCompatibilityNotice({ pluginId: "demo", code: "legacy-before-agent-start" }),
-      createCompatibilityNotice({ pluginId: "demo", code: "hook-only" }),
-    ]);
-
-    expectAutoEnabledStatusLoad({
-      rawConfig,
-      autoEnabledConfig,
-      autoEnabledReasons: {
-        demo: ["demo configured"],
-      },
-    });
+    expectAutoEnabledDemoCompatibilityNoticesPreserveRawConfig();
   });
 
   it("normalizes bundled plugin versions to the core base release", () => {
@@ -565,10 +663,10 @@ describe("plugin status reports", () => {
       plugins: {
         entries: {
           google: {
-            hooks: { allowPromptInjection: false },
+            hooks: { allowPromptInjection: false, allowConversationAccess: true },
             subagent: {
               allowModelOverride: true,
-              allowedModels: ["openai/gpt-5.4"],
+              allowedModels: ["openai/gpt-5.5"],
             },
           },
         },
@@ -581,7 +679,6 @@ describe("plugin status reports", () => {
           name: "Google",
           description: "Google provider plugin",
           origin: "bundled",
-          cliBackendIds: ["google-gemini-cli"],
           providerIds: ["google"],
           mediaUnderstandingProviderIds: ["google"],
           imageGenerationProviderIds: ["google"],
@@ -598,13 +695,7 @@ describe("plugin status reports", () => {
     expectInspectShape(inspect!, {
       shape: "hybrid-capability",
       capabilityMode: "hybrid",
-      capabilityKinds: [
-        "cli-backend",
-        "text-inference",
-        "media-understanding",
-        "image-generation",
-        "web-search",
-      ],
+      capabilityKinds: ["text-inference", "media-understanding", "image-generation", "web-search"],
     });
     expect(inspect?.usesLegacyBeforeAgentStart).toBe(true);
     expect(inspect?.compatibility).toEqual([
@@ -612,8 +703,9 @@ describe("plugin status reports", () => {
     ]);
     expectInspectPolicy(inspect!, {
       allowPromptInjection: false,
+      allowConversationAccess: true,
       allowModelOverride: true,
-      allowedModels: ["openai/gpt-5.4"],
+      allowedModels: ["openai/gpt-5.5"],
       hasAllowedModelsConfig: true,
     });
     expect(inspect?.diagnostics).toEqual([
@@ -651,7 +743,7 @@ describe("plugin status reports", () => {
     expectCapabilityKinds(inspect[1], ["text-inference", "web-search"]);
   });
 
-  it("treats a CLI-backend-only plugin as a plain capability", () => {
+  it("treats a CLI-command-only plugin as a plain capability", () => {
     setSinglePluginLoadResult(
       createPluginRecord({
         id: "anthropic",
@@ -668,6 +760,32 @@ describe("plugin status reports", () => {
       capabilityKinds: ["cli-backend"],
     });
     expect(inspect.capabilities).toEqual([{ kind: "cli-backend", ids: ["claude-cli"] }]);
+  });
+
+  it("treats a context-engine plugin as a plain capability", () => {
+    setPluginLoadResult({
+      plugins: [
+        createPluginRecord({
+          id: "moon",
+          name: "Moon",
+          kind: "context-engine",
+          contextEngineIds: ["moon-engine"],
+          hookCount: 1,
+        }),
+      ],
+      hooks: [createCustomHook({ pluginId: "moon", events: ["message"] })],
+    });
+
+    const inspect = expectInspectReport("moon");
+
+    expectInspectShape(inspect, {
+      shape: "plain-capability",
+      capabilityMode: "plain",
+      capabilityKinds: ["context-engine"],
+    });
+    expect(inspect.capabilities).toEqual([{ kind: "context-engine", ids: ["moon-engine"] }]);
+    expect(inspect.compatibility).toEqual([]);
+    expectNoCompatibilityWarnings();
   });
 
   it("builds compatibility warnings for legacy compatibility paths", () => {
@@ -713,6 +831,38 @@ describe("plugin status reports", () => {
         createCompatibilityNotice({ pluginId: "legacy-only", code: "legacy-before-agent-start" }),
       ],
     });
+  });
+
+  it("builds compatibility warnings for deprecated implicit startup sidecar metadata", () => {
+    setSinglePluginLoadResult(
+      createPluginRecord({
+        id: "legacy-sidecar",
+        name: "Legacy Sidecar",
+        compat: ["legacy-implicit-startup-sidecar"],
+      }),
+    );
+
+    expectCompatibilityOutput({
+      notices: [
+        createCompatibilityNotice({
+          pluginId: "legacy-sidecar",
+          code: "legacy-implicit-startup-sidecar",
+        }),
+      ],
+      warnings: [`legacy-sidecar ${LEGACY_IMPLICIT_STARTUP_SIDECAR_MESSAGE}`],
+    });
+  });
+
+  it("does not warn when explicit startup-lazy metadata avoids legacy startup compatibility", () => {
+    setSinglePluginLoadResult(
+      createPluginRecord({
+        id: "modern-startup-lazy",
+        name: "Modern Startup Lazy",
+        compat: [],
+      }),
+    );
+
+    expectNoCompatibilityWarnings();
   });
 
   it("returns no compatibility warnings for modern capability plugins", () => {
@@ -779,10 +929,14 @@ describe("plugin status reports", () => {
     expect(
       summarizePluginCompatibility([
         notice,
+        createCompatibilityNotice({
+          pluginId: "legacy-plugin",
+          code: "legacy-implicit-startup-sidecar",
+        }),
         createCompatibilityNotice({ pluginId: "legacy-plugin", code: "hook-only" }),
       ]),
     ).toEqual({
-      noticeCount: 2,
+      noticeCount: 3,
       pluginCount: 1,
     });
   });
